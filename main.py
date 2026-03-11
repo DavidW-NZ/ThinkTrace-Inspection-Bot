@@ -1,6 +1,7 @@
 import json
 import os
 import logging
+import asyncio
 from pathlib import Path
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -15,6 +16,11 @@ from telegram.ext import (
 )
 
 import session_store
+from telegram_bridge import (
+    TelegramBridgeError,
+    TelegramUserNotMappedError,
+    fetch_inspection_setups,
+)
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -450,6 +456,7 @@ async def post_init(application) -> None:
     # IMPORTANT: keep this exact order (as per your locked workflow + updates)
     commands = [
         BotCommand("start", "Start"),
+        BotCommand("setups", "List active inspection setups"),
         BotCommand("new", "Add new inspection item"),
         BotCommand("action_required", "add action required item"),
         BotCommand("action_completed", "add action completed item"),
@@ -493,6 +500,54 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     clear_mode(context)
     _clear_all_pending(context)
     await update.message.reply_text("Cancelled.")
+
+
+def _render_setups_message(setups: list) -> str:
+    if not setups:
+        return "No active inspection setups found."
+
+    lines: list[str] = ["Active inspection setups:"]
+    for setup in setups:
+        template_id = (
+            str(setup.selected_template_id)
+            if setup.selected_template_id is not None
+            else "None"
+        )
+        lines.append("")
+        lines.append(f"setup_name: {setup.setup_name}")
+        lines.append(f"project_id: {setup.project_id}")
+        lines.append(f"selected_template_id: {template_id}")
+        lines.append(f"is_active: {setup.is_active}")
+    return "\n".join(lines)
+
+
+async def cmd_setups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _ = context
+    telegram_user = update.effective_user
+    message = update.message
+
+    if telegram_user is None or message is None:
+        return
+
+    try:
+        setups = await asyncio.to_thread(
+            fetch_inspection_setups,
+            int(telegram_user.id),
+            active_only=True,
+        )
+    except TelegramUserNotMappedError:
+        await message.reply_text(
+            "Your Telegram account is not mapped to a ThinkTrace user. Please complete the website-side mapping first."
+        )
+        return
+    except TelegramBridgeError as exc:
+        logger.exception("Failed to load inspection setups for Telegram user %s: %s", telegram_user.id, exc)
+        await message.reply_text(
+            "Unable to load inspection setups right now. Please try again later."
+        )
+        return
+
+    await message.reply_text(_render_setups_message(setups))
 
 
 async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1797,6 +1852,7 @@ def build_app():
     app = ApplicationBuilder().token(token).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("setups", cmd_setups))
     app.add_handler(CommandHandler("new", cmd_new))
     app.add_handler(CommandHandler("goto", cmd_goto))
     app.add_handler(CommandHandler("go", cmd_go))
