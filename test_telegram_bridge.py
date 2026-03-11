@@ -34,15 +34,21 @@ class TelegramBridgeTests(unittest.TestCase):
             telegram_bridge,
             "urlopen",
             return_value=_FakeResponse(
-                [
-                    {
-                        "setup_id": "setup-1",
-                        "setup_name": "Primary Setup",
-                        "project_id": "project-9",
-                        "selected_template_id": "template-2",
-                        "is_active": True,
-                    }
-                ]
+                {
+                    "success": True,
+                    "data": {
+                        "items": [
+                            {
+                                "setup_id": "setup-1",
+                                "setup_name": "Primary Setup",
+                                "project_id": "project-9",
+                                "selected_template_id": "template-2",
+                                "is_active": True,
+                            }
+                        ]
+                    },
+                    "error": None,
+                }
             ),
         ) as mocked_urlopen:
             setups = telegram_bridge.fetch_inspection_setups(
@@ -73,6 +79,23 @@ class TelegramBridgeTests(unittest.TestCase):
             telegram_bridge,
             "urlopen",
             return_value=_FakeResponse({"unexpected": "shape"}),
+        ):
+            with self.assertRaises(telegram_bridge.TelegramBridgeError):
+                telegram_bridge.fetch_inspection_setups(
+                    telegram_user_id=123,
+                    config=config,
+                )
+
+    def test_fetch_inspection_setups_rejects_unsuccessful_envelope(self):
+        config = telegram_bridge.TelegramBridgeConfig(
+            base_url="https://example.test/",
+            token="bridge-secret",
+        )
+
+        with patch.object(
+            telegram_bridge,
+            "urlopen",
+            return_value=_FakeResponse({"success": False, "data": {"items": []}, "error": "forbidden"}),
         ):
             with self.assertRaises(telegram_bridge.TelegramBridgeError):
                 telegram_bridge.fetch_inspection_setups(

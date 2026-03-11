@@ -80,10 +80,21 @@ def fetch_inspection_setups(
     except Exception as exc:
         raise TelegramBridgeError("Failed to fetch inspection setups from ThinkTrace bridge.") from exc
 
-    if not isinstance(payload, list):
+    if not isinstance(payload, dict):
         raise TelegramBridgeError("ThinkTrace bridge returned an invalid inspection setups payload.")
 
-    return [_parse_inspection_setup(item) for item in payload]
+    if payload.get("success") is not True:
+        raise TelegramBridgeError("ThinkTrace bridge reported an unsuccessful inspection setups response.")
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise TelegramBridgeError("ThinkTrace bridge returned an invalid inspection setups data envelope.")
+
+    items = data.get("items")
+    if not isinstance(items, list):
+        raise TelegramBridgeError("ThinkTrace bridge returned an invalid inspection setups items list.")
+
+    return [_parse_inspection_setup(item) for item in items]
 
 
 def _parse_inspection_setup(item: Any) -> InspectionSetupSummary:
