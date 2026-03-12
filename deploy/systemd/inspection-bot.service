@@ -1,0 +1,17 @@
+[Unit]
+Description=ThinkTrace Inspection Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+Environment=INSPECTION_ENV_FILE=/etc/inspection-bot/inspection-bot.env
+ExecStart=/usr/bin/env bash -lc 'cd "/home/ubuntu/projects/Inspection Bot_local_v1" && exec ./deploy/run_bot.sh'
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
