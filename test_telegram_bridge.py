@@ -40,6 +40,22 @@ class TelegramBridgeTests(unittest.TestCase):
         self.assertEqual(config.base_url, "https://example.test/root/")
         self.assertEqual(config.token, "bridge-secret")
 
+    def test_load_inspection_output_write_config_reads_write_token_env(self):
+        with patch.dict(
+            os.environ,
+            {
+                "THINKTRACE_BASE_URL": "https://example.test/root",
+                "TELEGRAM_INSPECTION_OUTPUT_WRITE_TOKEN": "write-secret",
+            },
+            clear=True,
+        ):
+            config = telegram_bridge.load_inspection_output_write_config_from_env()
+
+        self.assertIsNotNone(config)
+        assert config is not None
+        self.assertEqual(config.base_url, "https://example.test/root/")
+        self.assertEqual(config.token, "write-secret")
+
     def test_fetch_inspection_setups_uses_telegram_user_id_and_bridge_token(self):
         config = telegram_bridge.TelegramBridgeConfig(
             base_url="https://example.test/root/",
@@ -160,6 +176,62 @@ class TelegramBridgeTests(unittest.TestCase):
         self.assertIn('"telegram_user_id": 987654321', body_text)
         self.assertIn('name="file"; filename="report.docx"', body_text)
         self.assertIn("docx-bytes", body_text)
+
+    def test_write_inspection_output_uses_env_write_token_header(self):
+        with patch.dict(
+            os.environ,
+            {
+                "THINKTRACE_BASE_URL": "https://example.test/root",
+                "TELEGRAM_INSPECTION_OUTPUT_WRITE_TOKEN": "write-secret",
+            },
+            clear=True,
+        ):
+            with patch.object(
+                telegram_bridge,
+                "urlopen",
+                return_value=_FakeResponse({"success": True, "data": {"stored": True}, "error": None}),
+            ) as mocked_urlopen:
+                telegram_bridge.write_inspection_output(
+                    file_name="report.docx",
+                    content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    output_bytes=b"docx-bytes",
+                    metadata={
+                        "telegram_user_id": 987654321,
+                        "inspection_id": "inspection-1",
+                        "project_id": "project-9",
+                        "output_type": "report",
+                    },
+                )
+
+        request = mocked_urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://example.test/root/telegram/inspection-outputs")
+        self.assertEqual(
+            request.get_header("X-telegram-inspection-output-write-token"),
+            "write-secret",
+        )
+
+    def test_write_inspection_output_does_not_send_without_write_token(self):
+        config = telegram_bridge.InspectionOutputWriteConfig(
+            base_url="https://example.test/root/",
+            token="   ",
+        )
+
+        with patch.object(telegram_bridge, "urlopen") as mocked_urlopen:
+            with self.assertRaises(telegram_bridge.TelegramBridgeError):
+                telegram_bridge.write_inspection_output(
+                    file_name="report.docx",
+                    content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    output_bytes=b"docx-bytes",
+                    metadata={
+                        "telegram_user_id": 987654321,
+                        "inspection_id": "inspection-1",
+                        "project_id": "project-9",
+                        "output_type": "report",
+                    },
+                    config=config,
+                )
+
+        mocked_urlopen.assert_not_called()
 
 
 if __name__ == "__main__":
