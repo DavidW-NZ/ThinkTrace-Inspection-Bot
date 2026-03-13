@@ -2,6 +2,7 @@ import json
 import os
 import time
 import traceback
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -10,6 +11,7 @@ from telegram import Bot
 
 from export_builder import build_export_text, ExportError
 from template_word_builder import build_word_report_from_template
+from telegram_bridge import write_inspection_output
 
 # Phase 3: AI Rewrite Layer (local direct call; graceful degrade)
 from rewrite_engine import rewrite_session_if_needed, RewriteConfig
@@ -187,6 +189,39 @@ def mark_success(outputs_inspection_dir: Path, job: dict) -> None:
     save_json(_success_marker(outputs_inspection_dir), marker)
 
 
+def _build_inspection_output_metadata(
+    job: dict,
+    session: dict,
+    report_path: Path,
+    report_bytes: bytes,
+) -> dict:
+    selected_setup = session.get("selected_setup") or {}
+
+    return {
+        "telegram_user_id": int(job.get("telegram_user_id", 0) or 0),
+        "inspection_id": str(session.get("inspection_id", "") or ""),
+        "project_id": str(session.get("project_id", "") or ""),
+        "setup_id": (
+            None if selected_setup.get("setup_id") in (None, "") else str(selected_setup.get("setup_id"))
+        ),
+        "setup_name": (
+            None if selected_setup.get("setup_name") in (None, "") else str(selected_setup.get("setup_name"))
+        ),
+        "selected_template_id": (
+            None
+            if selected_setup.get("selected_template_id") in (None, "")
+            else str(selected_setup.get("selected_template_id"))
+        ),
+        "output_type": "report",
+        "file_name": report_path.name,
+        "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "file_size_bytes": len(report_bytes),
+        "sha256": hashlib.sha256(report_bytes).hexdigest(),
+        "generated_at": _utc_now_iso(),
+        "source": "telegram-inspection-bot",
+    }
+
+
 def notify(bot: Bot | None, chat_id: int, text: str) -> None:
     if not bot:
         return
@@ -268,6 +303,17 @@ def process_one_job(p: Paths, job_path_running: Path, bot: Bot | None) -> None:
             job,
             bot,
             "Job missing inspection_id",
+            None,
+        )
+        return
+    telegram_user_id = int(job.get("telegram_user_id", 0) or 0)
+    if telegram_user_id <= 0:
+        handle_failure(
+            p,
+            job_path_running,
+            job,
+            bot,
+            "Job missing telegram_user_id",
             None,
         )
         return
@@ -384,6 +430,15 @@ def process_one_job(p: Paths, job_path_running: Path, bot: Bot | None) -> None:
         for f in expected_files:
             if not f.exists():
                 raise RuntimeError(f"Missing artifact: {f.name}")
+
+        report_path = out_dir / "report.docx"
+        report_bytes = report_path.read_bytes()
+        write_inspection_output(
+            file_name=report_path.name,
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            output_bytes=report_bytes,
+            metadata=_build_inspection_output_metadata(job, session, report_path, report_bytes),
+        )
 
         mark_success(out_dir, job)
     except Exception as e:
