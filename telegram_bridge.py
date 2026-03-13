@@ -148,6 +148,10 @@ def write_inspection_output(
         raise TelegramBridgeError(
             "Inspection output write bridge is not configured. Missing THINKTRACE_BASE_URL/THINKTRACE_BRIDGE_BASE_URL and TELEGRAM_INSPECTION_OUTPUT_WRITE_TOKEN."
         )
+    if not cfg.token.strip():
+        raise TelegramBridgeError(
+            "Inspection output write bridge is not configured. Missing TELEGRAM_INSPECTION_OUTPUT_WRITE_TOKEN."
+        )
 
     body, boundary = _encode_multipart_form_data(
         metadata=metadata,
