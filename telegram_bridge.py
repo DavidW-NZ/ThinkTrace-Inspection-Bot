@@ -1,8 +1,9 @@
+import http.client
 import json
 import os
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -159,21 +160,14 @@ def write_inspection_output(
         content_type=content_type,
         output_bytes=output_bytes,
     )
-    url = urljoin(cfg.base_url, "telegram/inspection-outputs")
-    request = Request(
-        url,
-        method="POST",
-        data=body,
-        headers={
-            "Accept": "application/json",
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "X-Telegram-Inspection-Output-Write-Token": cfg.token,
-        },
-    )
-
     try:
-        with urlopen(request, timeout=cfg.timeout_seconds) as response:
-            payload = json.load(response)
+        payload = _post_inspection_output_multipart(
+            url=urljoin(cfg.base_url, "telegram/inspection-outputs"),
+            token=cfg.token,
+            body=body,
+            boundary=boundary,
+            timeout_seconds=cfg.timeout_seconds,
+        )
     except Exception as exc:
         raise TelegramBridgeError("Failed to write inspection output to ThinkTrace bridge.") from exc
 
@@ -207,6 +201,43 @@ def _encode_multipart_form_data(
         f"--{boundary}--\r\n".encode("utf-8"),
     ]
     return b"".join(lines), boundary
+
+
+def _post_inspection_output_multipart(
+    *,
+    url: str,
+    token: str,
+    body: bytes,
+    boundary: str,
+    timeout_seconds: float,
+) -> Any:
+    parsed_url = urlparse(url)
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        raise TelegramBridgeError("Inspection output write bridge URL is invalid.")
+
+    connection_class = (
+        http.client.HTTPSConnection if parsed_url.scheme == "https" else http.client.HTTPConnection
+    )
+    path = parsed_url.path or "/"
+    if parsed_url.query:
+        path = f"{path}?{parsed_url.query}"
+
+    connection = connection_class(parsed_url.netloc, timeout=timeout_seconds)
+    try:
+        connection.putrequest("POST", path)
+        connection.putheader("Accept", "application/json")
+        connection.putheader("Content-Type", f"multipart/form-data; boundary={boundary}")
+        connection.putheader("Content-Length", str(len(body)))
+        connection.putheader("X-Telegram-Inspection-Output-Write-Token", token)
+        connection.endheaders()
+        connection.send(body)
+
+        response = connection.getresponse()
+        payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        connection.close()
+
+    return payload
 
 
 def _parse_inspection_setup(item: Any) -> InspectionSetupSummary:
