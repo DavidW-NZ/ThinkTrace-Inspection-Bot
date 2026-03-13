@@ -479,6 +479,29 @@ async def post_init(application) -> None:
 # Commands
 # ----------------------------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    selected_setup = context.user_data.get("selected_setup")
+    if selected_setup:
+        chat_id = update.effective_chat.id
+        project_id = str(selected_setup.get("project_id"))
+        session, session_selected_setup = _build_new_session(project_id, selected_setup)
+        inspection_id = str(session["inspection_id"])
+
+        session_store.set_active_inspection_id(chat_id, inspection_id)
+        session_store.save_session(session)
+
+        context.user_data.pop("projects_cache", None)
+        clear_mode(context)
+        _clear_all_pending(context)
+
+        await update.message.reply_text(
+            "Session started from selected setup.\n"
+            f"Project: {project_id}\n"
+            f"Inspection: {inspection_id}\n"
+            "CAPTURING.\n"
+            f"Applied setup: {session_selected_setup['setup_name']} ({session_selected_setup['setup_id']})."
+        )
+        return
+
     projects = load_projects()
     if not projects:
         await update.message.reply_text("No projects found in projects.json.")
@@ -562,6 +585,43 @@ def _build_session_selected_setup(selected_setup: dict | None) -> dict[str, str 
             else str(selected_setup.get("selected_template_id"))
         ),
     }
+
+
+def _build_new_session(
+    project_id: str, selected_setup: dict | None = None
+) -> tuple[dict, dict[str, str | None] | None]:
+    inspection_id = generate_inspection_id(project_id)
+    session_selected_setup = _build_session_selected_setup(selected_setup)
+    now_iso = _utc_now_iso()
+
+    session = {
+        "inspection_id": inspection_id,
+        "project_id": project_id,
+        "status": "CAPTURING",
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "photo_counter": 1,
+        "active_observation": 1,
+        "active_kind": "OBS",
+        "active_number": 1,
+        "actions_required": [],
+        "actions_completed": [],
+        "observations": [{"number": 1, "raw_text": "", "photos": [], "include_in_report": True}],
+        "review_items": [],
+        "header": {
+            "title": "",
+            "location_text": "",
+            "location_general": "",
+            "weather": None,
+            "weather_is_manual": False,
+            "datetime_override": None,
+            "info_confirmed_at": None,
+        },
+    }
+    if session_selected_setup is not None:
+        session["selected_setup"] = session_selected_setup
+
+    return session, session_selected_setup
 
 
 def _is_unmapped_bridge_error(exc: TelegramBridgeError) -> bool:
@@ -1158,37 +1218,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 return
 
             project_id = projects[choice - 1]
-            inspection_id = generate_inspection_id(project_id)
-            session_selected_setup = _build_session_selected_setup(
-                context.user_data.get("selected_setup")
+            session, session_selected_setup = _build_new_session(
+                project_id, context.user_data.get("selected_setup")
             )
-
-            session = {
-                "inspection_id": inspection_id,
-                "project_id": project_id,
-                "status": "CAPTURING",
-                "created_at": _utc_now_iso(),
-                "updated_at": _utc_now_iso(),
-                "photo_counter": 1,
-                "active_observation": 1,
-                "active_kind": "OBS",
-                "active_number": 1,
-                "actions_required": [],
-                "actions_completed": [],
-                "observations": [{"number": 1, "raw_text": "", "photos": [], "include_in_report": True}],
-                "review_items": [],
-                "header": {
-                    "title": "",
-                    "location_text": "",
-                    "location_general": "",
-                    "weather": None,
-                    "weather_is_manual": False,
-                    "datetime_override": None,
-                    "info_confirmed_at": None,
-                },
-            }
-            if session_selected_setup is not None:
-                session["selected_setup"] = session_selected_setup
+            inspection_id = str(session["inspection_id"])
 
             session_store.set_active_inspection_id(chat_id, inspection_id)
             session_store.save_session(session)
