@@ -70,6 +70,7 @@ MODE_HIDE_SELECT = "HIDE_SELECT"            # toggle include_in_report for obser
 
 # --- NEW: /confirm soft gate ---
 MODE_CONFIRM_GATE = "CONFIRM_GATE"          # header missing prompt (1 fill now / 2 confirm anyway)
+MODE_SETUP_SELECT = "SETUP_SELECT"          # choose active inspection setup from /setups
 
 MODE_TIMEOUT_SECONDS = 120
 TRUNCATE_CHARS = 60
@@ -428,6 +429,7 @@ def _clear_all_pending(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # /confirm gate
     context.user_data.pop("confirm_pending", None)
+    context.user_data.pop("setup_selection_options", None)
 
 
 # ----------------------------
@@ -453,6 +455,8 @@ async def post_init(application) -> None:
     commands = [
         BotCommand("start", "Start"),
         BotCommand("setups", "List active inspection setups"),
+        BotCommand("currentsetup", "Show selected inspection setup"),
+        BotCommand("clearsetup", "Clear selected inspection setup"),
         BotCommand("new", "Add new inspection item"),
         BotCommand("action_required", "add action required item"),
         BotCommand("action_completed", "add action completed item"),
@@ -503,18 +507,45 @@ def _render_setups_message(setups: list) -> str:
         return "No active inspection setups found."
 
     lines: list[str] = ["Active inspection setups:"]
-    for setup in setups:
+    for idx, setup in enumerate(setups, start=1):
         template_id = (
             str(setup.selected_template_id)
             if setup.selected_template_id is not None
             else "None"
         )
         lines.append("")
-        lines.append(f"setup_name: {setup.setup_name}")
+        lines.append(f"{idx}. {setup.setup_name}")
         lines.append(f"project_id: {setup.project_id}")
         lines.append(f"selected_template_id: {template_id}")
-        lines.append(f"is_active: {setup.is_active}")
+    lines.append("")
+    lines.append("Reply with a number to select a setup.")
     return "\n".join(lines)
+
+
+def _serialize_setup_summary(setup) -> dict[str, str | bool | None]:
+    return {
+        "setup_id": str(setup.setup_id),
+        "setup_name": str(setup.setup_name),
+        "project_id": str(setup.project_id),
+        "selected_template_id": (
+            None if setup.selected_template_id is None else str(setup.selected_template_id)
+        ),
+        "is_active": bool(setup.is_active),
+    }
+
+
+def _render_selected_setup_message(selected_setup: dict | None) -> str:
+    if not selected_setup:
+        return "No inspection setup selected."
+
+    template_id = selected_setup.get("selected_template_id")
+    template_text = "None" if template_id is None else str(template_id)
+    return (
+        "Current inspection setup:\n\n"
+        f"setup_name: {selected_setup.get('setup_name')}\n"
+        f"project_id: {selected_setup.get('project_id')}\n"
+        f"selected_template_id: {template_text}"
+    )
 
 
 def _is_unmapped_bridge_error(exc: TelegramBridgeError) -> bool:
@@ -523,7 +554,6 @@ def _is_unmapped_bridge_error(exc: TelegramBridgeError) -> bool:
 
 
 async def cmd_setups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    _ = context
     telegram_user = update.effective_user
     message = update.message
 
@@ -553,7 +583,39 @@ async def cmd_setups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
+    if not setups:
+        clear_mode(context)
+        context.user_data.pop("setup_selection_options", None)
+        await message.reply_text(_render_setups_message(setups))
+        return
+
+    context.user_data["setup_selection_options"] = [
+        _serialize_setup_summary(setup) for setup in setups
+    ]
+    set_mode(context, MODE_SETUP_SELECT)
     await message.reply_text(_render_setups_message(setups))
+
+
+async def cmd_currentsetup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    if message is None:
+        return
+
+    await message.reply_text(
+        _render_selected_setup_message(context.user_data.get("selected_setup"))
+    )
+
+
+async def cmd_clearsetup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    if message is None:
+        return
+
+    context.user_data.pop("selected_setup", None)
+    context.user_data.pop("setup_selection_options", None)
+    if get_mode(context) == MODE_SETUP_SELECT:
+        clear_mode(context)
+    await message.reply_text("Cleared selected inspection setup.")
 
 
 async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1116,6 +1178,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
             await update.message.reply_text(
                 f"Session started.\nProject: {project_id}\nInspection: {inspection_id}\nCAPTURING."
+            )
+            return
+
+        if mode == MODE_SETUP_SELECT:
+            options = context.user_data.get("setup_selection_options") or []
+            if not options:
+                clear_mode(context)
+                await update.message.reply_text("No setup list is active. Use /setups.")
+                return
+
+            try:
+                choice = int(text)
+            except ValueError:
+                await update.message.reply_text("Please reply with a setup number.")
+                return
+
+            if choice < 1 or choice > len(options):
+                await update.message.reply_text("Invalid setup number. Please try again.")
+                return
+
+            selected_setup = dict(options[choice - 1])
+            context.user_data["selected_setup"] = selected_setup
+            context.user_data.pop("setup_selection_options", None)
+            clear_mode(context)
+            await update.message.reply_text(
+                f"Selected setup: {selected_setup['setup_name']} ({selected_setup['project_id']})."
             )
             return
 
@@ -1859,6 +1947,8 @@ def build_app():
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("setups", cmd_setups))
+    app.add_handler(CommandHandler("currentsetup", cmd_currentsetup))
+    app.add_handler(CommandHandler("clearsetup", cmd_clearsetup))
     app.add_handler(CommandHandler("new", cmd_new))
     app.add_handler(CommandHandler("goto", cmd_goto))
     app.add_handler(CommandHandler("go", cmd_go))
