@@ -24,6 +24,86 @@ import main
 
 
 class MainSetupsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_handle_text_project_select_injects_selected_setup_into_new_session(self):
+        message = SimpleNamespace(text="1", reply_text=AsyncMock())
+        context = SimpleNamespace(
+            user_data={
+                "mode": main.MODE_PROJECT_SELECT,
+                "mode_started_at": main._now_utc_ts(),
+                "projects_cache": ["project-9"],
+                "selected_setup": {
+                    "setup_id": "setup-1",
+                    "setup_name": "Primary Setup",
+                    "project_id": "project-9",
+                    "selected_template_id": "template-2",
+                    "is_active": True,
+                },
+            }
+        )
+        update = SimpleNamespace(
+            message=message,
+            effective_chat=SimpleNamespace(id=123),
+        )
+
+        with (
+            patch.object(main, "generate_inspection_id", return_value="project-9-20260313-120000"),
+            patch.object(main, "_utc_now_iso", return_value="2026-03-13T12:00:00Z"),
+            patch.object(main.session_store, "set_active_inspection_id") as mock_set_active,
+            patch.object(main.session_store, "save_session") as mock_save_session,
+        ):
+            await main.handle_text(update, context)
+
+        saved_session = mock_save_session.call_args.args[0]
+        self.assertEqual(
+            saved_session["selected_setup"],
+            {
+                "setup_id": "setup-1",
+                "setup_name": "Primary Setup",
+                "project_id": "project-9",
+                "selected_template_id": "template-2",
+            },
+        )
+        self.assertNotIn("is_active", saved_session["selected_setup"])
+        mock_set_active.assert_called_once_with(123, "project-9-20260313-120000")
+        message.reply_text.assert_awaited_once_with(
+            "Session started.\n"
+            "Project: project-9\n"
+            "Inspection: project-9-20260313-120000\n"
+            "CAPTURING.\n"
+            "Applied setup: Primary Setup (setup-1)."
+        )
+
+    async def test_handle_text_project_select_leaves_session_unchanged_without_selected_setup(self):
+        message = SimpleNamespace(text="1", reply_text=AsyncMock())
+        context = SimpleNamespace(
+            user_data={
+                "mode": main.MODE_PROJECT_SELECT,
+                "mode_started_at": main._now_utc_ts(),
+                "projects_cache": ["project-9"],
+            }
+        )
+        update = SimpleNamespace(
+            message=message,
+            effective_chat=SimpleNamespace(id=123),
+        )
+
+        with (
+            patch.object(main, "generate_inspection_id", return_value="project-9-20260313-120000"),
+            patch.object(main, "_utc_now_iso", return_value="2026-03-13T12:00:00Z"),
+            patch.object(main.session_store, "set_active_inspection_id"),
+            patch.object(main.session_store, "save_session") as mock_save_session,
+        ):
+            await main.handle_text(update, context)
+
+        saved_session = mock_save_session.call_args.args[0]
+        self.assertNotIn("selected_setup", saved_session)
+        message.reply_text.assert_awaited_once_with(
+            "Session started.\n"
+            "Project: project-9\n"
+            "Inspection: project-9-20260313-120000\n"
+            "CAPTURING."
+        )
+
     async def test_cmd_setups_replies_with_active_setups(self):
         message = SimpleNamespace(reply_text=AsyncMock())
         context = SimpleNamespace(user_data={})

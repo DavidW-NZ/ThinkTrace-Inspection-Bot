@@ -548,6 +548,22 @@ def _render_selected_setup_message(selected_setup: dict | None) -> str:
     )
 
 
+def _build_session_selected_setup(selected_setup: dict | None) -> dict[str, str | None] | None:
+    if not selected_setup:
+        return None
+
+    return {
+        "setup_id": str(selected_setup.get("setup_id")),
+        "setup_name": str(selected_setup.get("setup_name")),
+        "project_id": str(selected_setup.get("project_id")),
+        "selected_template_id": (
+            None
+            if selected_setup.get("selected_template_id") is None
+            else str(selected_setup.get("selected_template_id"))
+        ),
+    }
+
+
 def _is_unmapped_bridge_error(exc: TelegramBridgeError) -> bool:
     message = str(exc).strip().lower()
     return "unmapped" in message or "not mapped" in message
@@ -1143,6 +1159,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
             project_id = projects[choice - 1]
             inspection_id = generate_inspection_id(project_id)
+            session_selected_setup = _build_session_selected_setup(
+                context.user_data.get("selected_setup")
+            )
 
             session = {
                 "inspection_id": inspection_id,
@@ -1168,6 +1187,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     "info_confirmed_at": None,
                 },
             }
+            if session_selected_setup is not None:
+                session["selected_setup"] = session_selected_setup
 
             session_store.set_active_inspection_id(chat_id, inspection_id)
             session_store.save_session(session)
@@ -1176,9 +1197,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             clear_mode(context)
             _clear_all_pending(context)
 
-            await update.message.reply_text(
-                f"Session started.\nProject: {project_id}\nInspection: {inspection_id}\nCAPTURING."
-            )
+            lines = [
+                "Session started.",
+                f"Project: {project_id}",
+                f"Inspection: {inspection_id}",
+                "CAPTURING.",
+            ]
+            if session_selected_setup is not None:
+                lines.append(
+                    f"Applied setup: {session_selected_setup['setup_name']} ({session_selected_setup['setup_id']})."
+                )
+
+            await update.message.reply_text("\n".join(lines))
             return
 
         if mode == MODE_SETUP_SELECT:
