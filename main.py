@@ -140,7 +140,7 @@ def ensure_job_dirs() -> None:
     JOBS_PENDING_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def enqueue_export_job(inspection_id: str, chat_id: int) -> None:
+def enqueue_export_job(inspection_id: str, chat_id: int, telegram_user_id: int) -> None:
     """Create a durable export job in jobs/pending.
 
     Job naming (locked): YYYYMMDD-HHMMSS_<inspection_id>.json
@@ -153,6 +153,7 @@ def enqueue_export_job(inspection_id: str, chat_id: int) -> None:
     job = {
         "inspection_id": inspection_id,
         "chat_id": int(chat_id),
+        "telegram_user_id": int(telegram_user_id),
         "created_at": _utc_now_iso(),
         "attempt": 0,
         "next_run_at": _utc_now_iso(),
@@ -1175,7 +1176,11 @@ async def cmd_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     await update.message.reply_text(CONFIRM_EXPORT_SUCCESS_MSG)
     try:
-        enqueue_export_job(str(session.get("inspection_id")), chat_id)
+        enqueue_export_job(
+            str(session.get("inspection_id")),
+            chat_id,
+            int(update.effective_user.id),
+        )
     except Exception as e:
         logger.exception("Failed to enqueue export job: %s", e)
         await update.message.reply_text(CONFIRM_EXPORT_ERROR_MSG)
@@ -1311,7 +1316,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
             await update.message.reply_text(CONFIRM_EXPORT_SUCCESS_MSG)
             try:
-                enqueue_export_job(str(session.get("inspection_id")), chat_id)
+                enqueue_export_job(
+                    str(session.get("inspection_id")),
+                    chat_id,
+                    int(update.effective_user.id),
+                )
             except Exception as e:
                 logger.exception("Failed to enqueue export job: %s", e)
                 await update.message.reply_text(CONFIRM_EXPORT_ERROR_MSG)

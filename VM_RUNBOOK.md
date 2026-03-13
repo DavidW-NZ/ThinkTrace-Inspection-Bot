@@ -35,13 +35,14 @@ Edit `/etc/inspection-bot/inspection-bot.env` and set:
 TELEGRAM_BOT_TOKEN=...
 THINKTRACE_BASE_URL=https://knowledge-accumulator-e9f2fgbuapfmdne8.australiaeast-01.azurewebsites.net
 TELEGRAM_BRIDGE_TOKEN=...
+TELEGRAM_INSPECTION_OUTPUT_WRITE_TOKEN=...
 INSPECTION_DATA_ROOT=/var/lib/inspection-bot
 ```
 
 Notes:
 
-- `TELEGRAM_BOT_TOKEN`, `THINKTRACE_BASE_URL`, and `TELEGRAM_BRIDGE_TOKEN` are treated as required runtime configuration.
-- The current code on this branch does not call the ThinkTrace base URL or bridge token yet, but the service startup requires them so the VM environment is ready for the existing contract surface.
+- `TELEGRAM_BOT_TOKEN`, `THINKTRACE_BASE_URL`, and `TELEGRAM_BRIDGE_TOKEN` are required runtime configuration for the current bot/runtime flow.
+- `TELEGRAM_INSPECTION_OUTPUT_WRITE_TOKEN` is additionally required by the worker to POST generated report outputs to `/telegram/inspection-outputs`.
 - `INSPECTION_DATA_ROOT` should contain `projects.json`, `templates/report_template.docx`, and all runtime state.
 
 ## Start

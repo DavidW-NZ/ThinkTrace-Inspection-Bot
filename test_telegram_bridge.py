@@ -22,6 +22,23 @@ class TelegramBridgeTests(unittest.TestCase):
     def test_load_config_from_env_returns_none_when_unset(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertIsNone(telegram_bridge.load_telegram_bridge_config_from_env())
+            self.assertIsNone(telegram_bridge.load_inspection_output_write_config_from_env())
+
+    def test_load_telegram_bridge_config_accepts_thinktrace_base_url_fallback(self):
+        with patch.dict(
+            os.environ,
+            {
+                "THINKTRACE_BASE_URL": "https://example.test/root",
+                "TELEGRAM_BRIDGE_TOKEN": "bridge-secret",
+            },
+            clear=True,
+        ):
+            config = telegram_bridge.load_telegram_bridge_config_from_env()
+
+        self.assertIsNotNone(config)
+        assert config is not None
+        self.assertEqual(config.base_url, "https://example.test/root/")
+        self.assertEqual(config.token, "bridge-secret")
 
     def test_fetch_inspection_setups_uses_telegram_user_id_and_bridge_token(self):
         config = telegram_bridge.TelegramBridgeConfig(
@@ -102,6 +119,47 @@ class TelegramBridgeTests(unittest.TestCase):
                     telegram_user_id=123,
                     config=config,
                 )
+
+    def test_write_inspection_output_posts_multipart_file_and_metadata(self):
+        config = telegram_bridge.InspectionOutputWriteConfig(
+            base_url="https://example.test/root/",
+            token="write-secret",
+            timeout_seconds=7.25,
+        )
+
+        with patch.object(
+            telegram_bridge,
+            "urlopen",
+            return_value=_FakeResponse({"success": True, "data": {"stored": True}, "error": None}),
+        ) as mocked_urlopen:
+            telegram_bridge.write_inspection_output(
+                file_name="report.docx",
+                content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                output_bytes=b"docx-bytes",
+                metadata={
+                    "telegram_user_id": 987654321,
+                    "inspection_id": "inspection-1",
+                    "project_id": "project-9",
+                    "output_type": "report",
+                },
+                config=config,
+            )
+
+        request = mocked_urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://example.test/root/telegram/inspection-outputs")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(
+            request.get_header("X-telegram-inspection-output-write-token"),
+            "write-secret",
+        )
+        self.assertIn("multipart/form-data; boundary=", request.get_header("Content-type"))
+        self.assertEqual(mocked_urlopen.call_args.kwargs["timeout"], 7.25)
+
+        body_text = request.data.decode("utf-8", errors="ignore")
+        self.assertIn('name="metadata"', body_text)
+        self.assertIn('"telegram_user_id": 987654321', body_text)
+        self.assertIn('name="file"; filename="report.docx"', body_text)
+        self.assertIn("docx-bytes", body_text)
 
 
 if __name__ == "__main__":
