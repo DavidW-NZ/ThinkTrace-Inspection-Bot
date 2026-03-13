@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -6,6 +7,8 @@ from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
 
@@ -160,6 +163,12 @@ def write_inspection_output(
         output_bytes=output_bytes,
     )
     url = urljoin(cfg.base_url, "telegram/inspection-outputs")
+    logger.info(
+        "inspection_output_write_bridge outbound_token_present=%s outbound_token_fingerprint=%s",
+        bool(cfg.token.strip()),
+        _token_fingerprint_prefix(cfg.token),
+    )
+
     request = Request(
         url,
         method="POST",
@@ -207,6 +216,13 @@ def _encode_multipart_form_data(
         f"--{boundary}--\r\n".encode("utf-8"),
     ]
     return b"".join(lines), boundary
+
+
+def _token_fingerprint_prefix(token: str) -> str:
+    token = (token or "").strip()
+    if not token:
+        return "MISSING"
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:8]
 
 
 def _parse_inspection_setup(item: Any) -> InspectionSetupSummary:
