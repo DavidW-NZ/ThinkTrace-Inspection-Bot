@@ -96,6 +96,15 @@ class WorkerOutputBridgeTests(unittest.TestCase):
 
             metadata = mock_write_output.call_args.kwargs["metadata"]
             self.assertEqual(metadata["telegram_user_id"], 987654321)
+            self.assertEqual(
+                metadata,
+                {
+                    "telegram_user_id": 987654321,
+                    "inspection_id": inspection_id,
+                    "project_id": "project-9",
+                    "output_type": "report",
+                },
+            )
 
     def test_process_one_job_does_not_handoff_when_report_artifact_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -18,45 +18,6 @@ class _FakeResponse:
         return False
 
 
-class _FakeHTTPResponse:
-    def __init__(self, payload):
-        self._payload = payload
-
-    def read(self):
-        return json.dumps(self._payload).encode("utf-8")
-
-
-class _FakeHTTPConnection:
-    def __init__(self, host, *, timeout):
-        self.host = host
-        self.timeout = timeout
-        self.method = None
-        self.path = None
-        self.headers = []
-        self.body = b""
-        self.closed = False
-        self.response = _FakeHTTPResponse({"success": True, "data": {"stored": True}, "error": None})
-
-    def putrequest(self, method, path):
-        self.method = method
-        self.path = path
-
-    def putheader(self, key, value):
-        self.headers.append((key, value))
-
-    def endheaders(self):
-        return None
-
-    def send(self, body):
-        self.body += body
-
-    def getresponse(self):
-        return self.response
-
-    def close(self):
-        self.closed = True
-
-
 class TelegramBridgeTests(unittest.TestCase):
     def test_load_config_from_env_returns_none_when_unset(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -181,14 +142,11 @@ class TelegramBridgeTests(unittest.TestCase):
             token="write-secret",
             timeout_seconds=7.25,
         )
-        captured_connections = []
-
-        def _build_connection(host, *, timeout):
-            connection = _FakeHTTPConnection(host, timeout=timeout)
-            captured_connections.append(connection)
-            return connection
-
-        with patch.object(telegram_bridge.http.client, "HTTPSConnection", side_effect=_build_connection):
+        with patch.object(
+            telegram_bridge,
+            "urlopen",
+            return_value=_FakeResponse({"success": True, "data": {"stored": True}, "error": None}),
+        ) as mocked_urlopen:
             telegram_bridge.write_inspection_output(
                 file_name="report.docx",
                 content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -202,34 +160,23 @@ class TelegramBridgeTests(unittest.TestCase):
                 config=config,
             )
 
-        self.assertEqual(len(captured_connections), 1)
-        connection = captured_connections[0]
-        self.assertEqual(connection.host, "example.test")
-        self.assertEqual(connection.timeout, 7.25)
-        self.assertEqual(connection.method, "POST")
-        self.assertEqual(connection.path, "/root/telegram/inspection-outputs")
-        self.assertTrue(connection.closed)
+        request = mocked_urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://example.test/root/telegram/inspection-outputs")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(
+            request.get_header("X-telegram-inspection-output-write-token"),
+            "write-secret",
+        )
+        self.assertIn("multipart/form-data; boundary=", request.get_header("Content-type"))
+        self.assertEqual(mocked_urlopen.call_args.kwargs["timeout"], 7.25)
 
-        headers = dict(connection.headers)
-        self.assertEqual(headers["X-Telegram-Inspection-Output-Write-Token"], "write-secret")
-        self.assertIn("multipart/form-data; boundary=", headers["Content-Type"])
-        self.assertEqual(headers["Accept"], "application/json")
-        self.assertEqual(headers["Content-Length"], str(len(connection.body)))
-
-        body_text = connection.body.decode("utf-8", errors="ignore")
+        body_text = request.data.decode("utf-8", errors="ignore")
         self.assertIn('name="metadata"', body_text)
         self.assertIn('"telegram_user_id": 987654321', body_text)
         self.assertIn('name="file"; filename="report.docx"', body_text)
         self.assertIn("docx-bytes", body_text)
 
     def test_write_inspection_output_uses_env_write_token_header(self):
-        captured_connections = []
-
-        def _build_connection(host, *, timeout):
-            connection = _FakeHTTPConnection(host, timeout=timeout)
-            captured_connections.append(connection)
-            return connection
-
         with patch.dict(
             os.environ,
             {
@@ -239,10 +186,10 @@ class TelegramBridgeTests(unittest.TestCase):
             clear=True,
         ):
             with patch.object(
-                telegram_bridge.http.client,
-                "HTTPSConnection",
-                side_effect=_build_connection,
-            ):
+                telegram_bridge,
+                "urlopen",
+                return_value=_FakeResponse({"success": True, "data": {"stored": True}, "error": None}),
+            ) as mocked_urlopen:
                 telegram_bridge.write_inspection_output(
                     file_name="report.docx",
                     content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -255,9 +202,11 @@ class TelegramBridgeTests(unittest.TestCase):
                     },
                 )
 
-        self.assertEqual(len(captured_connections), 1)
-        headers = dict(captured_connections[0].headers)
-        self.assertEqual(headers["X-Telegram-Inspection-Output-Write-Token"], "write-secret")
+        request = mocked_urlopen.call_args.args[0]
+        self.assertEqual(
+            request.get_header("X-telegram-inspection-output-write-token"),
+            "write-secret",
+        )
 
     def test_write_inspection_output_does_not_send_without_write_token(self):
         config = telegram_bridge.InspectionOutputWriteConfig(
@@ -265,7 +214,7 @@ class TelegramBridgeTests(unittest.TestCase):
             token="   ",
         )
 
-        with patch.object(telegram_bridge.http.client, "HTTPSConnection") as mocked_connection:
+        with patch.object(telegram_bridge, "urlopen") as mocked_urlopen:
             with self.assertRaises(telegram_bridge.TelegramBridgeError):
                 telegram_bridge.write_inspection_output(
                     file_name="report.docx",
@@ -280,7 +229,7 @@ class TelegramBridgeTests(unittest.TestCase):
                     config=config,
                 )
 
-        mocked_connection.assert_not_called()
+        mocked_urlopen.assert_not_called()
 
 
 if __name__ == "__main__":
