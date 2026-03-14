@@ -2,7 +2,6 @@ import json
 import os
 import time
 import traceback
-import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -192,33 +191,12 @@ def mark_success(outputs_inspection_dir: Path, job: dict) -> None:
 def _build_inspection_output_metadata(
     job: dict,
     session: dict,
-    report_path: Path,
-    report_bytes: bytes,
 ) -> dict:
-    selected_setup = session.get("selected_setup") or {}
-
     return {
         "telegram_user_id": int(job.get("telegram_user_id", 0) or 0),
         "inspection_id": str(session.get("inspection_id", "") or ""),
         "project_id": str(session.get("project_id", "") or ""),
-        "setup_id": (
-            None if selected_setup.get("setup_id") in (None, "") else str(selected_setup.get("setup_id"))
-        ),
-        "setup_name": (
-            None if selected_setup.get("setup_name") in (None, "") else str(selected_setup.get("setup_name"))
-        ),
-        "selected_template_id": (
-            None
-            if selected_setup.get("selected_template_id") in (None, "")
-            else str(selected_setup.get("selected_template_id"))
-        ),
         "output_type": "report",
-        "file_name": report_path.name,
-        "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "file_size_bytes": len(report_bytes),
-        "sha256": hashlib.sha256(report_bytes).hexdigest(),
-        "generated_at": _utc_now_iso(),
-        "source": "telegram-inspection-bot",
     }
 
 
@@ -437,7 +415,7 @@ def process_one_job(p: Paths, job_path_running: Path, bot: Bot | None) -> None:
             file_name=report_path.name,
             content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             output_bytes=report_bytes,
-            metadata=_build_inspection_output_metadata(job, session, report_path, report_bytes),
+            metadata=_build_inspection_output_metadata(job, session),
         )
 
         mark_success(out_dir, job)
