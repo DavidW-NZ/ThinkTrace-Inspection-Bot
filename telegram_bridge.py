@@ -1,10 +1,12 @@
 import json
 import os
+import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
-from uuid import uuid4
 
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
@@ -153,25 +155,21 @@ def write_inspection_output(
             "Inspection output write bridge is not configured. Missing TELEGRAM_INSPECTION_OUTPUT_WRITE_TOKEN."
         )
 
-    body, boundary = _encode_multipart_form_data(
-        metadata=metadata,
-        file_name=file_name,
-        content_type=content_type,
-        output_bytes=output_bytes,
-    )
-    request = Request(
-        urljoin(cfg.base_url, "telegram/inspection-outputs"),
-        method="POST",
-        data=body,
-        headers={
-            "Accept": "application/json",
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "X-Telegram-Inspection-Output-Write-Token": cfg.token,
-        },
-    )
+    url = urljoin(cfg.base_url, "telegram/inspection-outputs")
+
     try:
-        with urlopen(request, timeout=cfg.timeout_seconds) as response:
-            payload = json.load(response)
+        response_body = _post_inspection_output_with_curl(
+            url=url,
+            token=cfg.token,
+            timeout_seconds=cfg.timeout_seconds,
+            metadata=metadata,
+            file_name=file_name,
+            content_type=content_type,
+            output_bytes=output_bytes,
+        )
+        payload = json.loads(response_body)
+    except TelegramBridgeError:
+        raise
     except Exception as exc:
         raise TelegramBridgeError("Failed to write inspection output to ThinkTrace bridge.") from exc
 
@@ -181,30 +179,75 @@ def write_inspection_output(
         raise TelegramBridgeError("ThinkTrace bridge reported an unsuccessful inspection output write response.")
 
 
-def _encode_multipart_form_data(
+def _post_inspection_output_with_curl(
     *,
+    url: str,
+    token: str,
+    timeout_seconds: float,
     metadata: dict[str, Any],
     file_name: str,
     content_type: str,
     output_bytes: bytes,
-) -> tuple[bytes, str]:
-    boundary = f"thinktrace-{uuid4().hex}"
-    lines = [
-        f"--{boundary}\r\n".encode("utf-8"),
-        b'Content-Disposition: form-data; name="metadata"\r\n',
-        b"Content-Type: application/json; charset=utf-8\r\n\r\n",
-        json.dumps(metadata, ensure_ascii=False).encode("utf-8"),
-        b"\r\n",
-        f"--{boundary}\r\n".encode("utf-8"),
-        (
-            f'Content-Disposition: form-data; name="file"; filename="{file_name}"\r\n'
-        ).encode("utf-8"),
-        f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"),
-        output_bytes,
-        b"\r\n",
-        f"--{boundary}--\r\n".encode("utf-8"),
-    ]
-    return b"".join(lines), boundary
+) -> str:
+    with tempfile.TemporaryDirectory(prefix="inspection-output-upload-") as tmpdir:
+        tmp_path = Path(tmpdir)
+        metadata_path = tmp_path / "metadata.json"
+        output_path = tmp_path / file_name
+        response_body_path = tmp_path / "response-body.txt"
+
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+        output_path.write_bytes(output_bytes)
+
+        command = [
+            "curl",
+            "-sS",
+            "--show-error",
+            "--request",
+            "POST",
+            "--max-time",
+            str(timeout_seconds),
+            "--output",
+            str(response_body_path),
+            "--write-out",
+            "%{http_code}",
+            "--header",
+            "Accept: application/json",
+            "--header",
+            f"X-Telegram-Inspection-Output-Write-Token: {token}",
+            "--form",
+            f"metadata=@{metadata_path};type=application/json",
+            "--form",
+            f"file=@{output_path};filename={file_name};type={content_type}",
+            url,
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except Exception as exc:
+            raise TelegramBridgeError("Failed to launch curl for inspection output upload.") from exc
+
+        if completed.returncode != 0:
+            stderr = (completed.stderr or "").strip()
+            raise TelegramBridgeError(
+                f"curl upload failed with exit code {completed.returncode}: {stderr or 'no stderr'}"
+            )
+
+        status_code = (completed.stdout or "").strip()
+        response_body = response_body_path.read_text(encoding="utf-8") if response_body_path.exists() else ""
+
+        if status_code != "200":
+            print("Inspection output upload failed via curl.")
+            print(f"HTTP status: {status_code or 'unknown'}")
+            print(f"HTTP body: {response_body}")
+            raise TelegramBridgeError(
+                f"Inspection output upload failed with HTTP {status_code or 'unknown'}: {response_body}"
+            )
+
+        return response_body
 
 
 def _parse_inspection_setup(item: Any) -> InspectionSetupSummary:

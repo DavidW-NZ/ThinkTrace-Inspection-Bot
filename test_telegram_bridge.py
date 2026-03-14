@@ -1,7 +1,9 @@
 import io
 import json
 import os
+import subprocess
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import telegram_bridge
@@ -142,11 +144,27 @@ class TelegramBridgeTests(unittest.TestCase):
             token="write-secret",
             timeout_seconds=7.25,
         )
-        with patch.object(
-            telegram_bridge,
-            "urlopen",
-            return_value=_FakeResponse({"success": True, "data": {"stored": True}, "error": None}),
-        ) as mocked_urlopen:
+        captured = {}
+
+        def _fake_run(command, capture_output, text, check):
+            self.assertTrue(capture_output)
+            self.assertTrue(text)
+            self.assertFalse(check)
+            captured["command"] = command
+            response_path = Path(command[command.index("--output") + 1])
+            metadata_arg = command[command.index("--form") + 1]
+            file_arg = command[command.index("--form", command.index("--form") + 1) + 1]
+            metadata_path = Path(metadata_arg.split("@", 1)[1].split(";", 1)[0])
+            file_path = Path(file_arg.split("@", 1)[1].split(";", 1)[0])
+            captured["metadata_text"] = metadata_path.read_text(encoding="utf-8")
+            captured["file_bytes"] = file_path.read_bytes()
+            response_path.write_text(
+                json.dumps({"success": True, "data": {"stored": True}, "error": None}),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(command, 0, stdout="200", stderr="")
+
+        with patch.object(telegram_bridge.subprocess, "run", side_effect=_fake_run):
             telegram_bridge.write_inspection_output(
                 file_name="report.docx",
                 content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -160,21 +178,25 @@ class TelegramBridgeTests(unittest.TestCase):
                 config=config,
             )
 
-        request = mocked_urlopen.call_args.args[0]
-        self.assertEqual(request.full_url, "https://example.test/root/telegram/inspection-outputs")
-        self.assertEqual(request.get_method(), "POST")
-        self.assertEqual(
-            request.get_header("X-telegram-inspection-output-write-token"),
-            "write-secret",
-        )
-        self.assertIn("multipart/form-data; boundary=", request.get_header("Content-type"))
-        self.assertEqual(mocked_urlopen.call_args.kwargs["timeout"], 7.25)
+        command = captured["command"]
+        self.assertEqual(command[0], "curl")
+        self.assertIn("https://example.test/root/telegram/inspection-outputs", command)
+        self.assertIn("7.25", command)
+        self.assertIn("Accept: application/json", command)
+        self.assertIn("X-Telegram-Inspection-Output-Write-Token: write-secret", command)
 
-        body_text = request.data.decode("utf-8", errors="ignore")
-        self.assertIn('name="metadata"', body_text)
-        self.assertIn('"telegram_user_id": 987654321', body_text)
-        self.assertIn('name="file"; filename="report.docx"', body_text)
-        self.assertIn("docx-bytes", body_text)
+        metadata_arg = command[command.index("--form") + 1]
+        file_arg = command[command.index("--form", command.index("--form") + 1) + 1]
+        self.assertIn("metadata=@", metadata_arg)
+        self.assertIn(";type=application/json", metadata_arg)
+        self.assertIn("file=@", file_arg)
+        self.assertIn("filename=report.docx", file_arg)
+        self.assertIn(
+            "type=application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            file_arg,
+        )
+        self.assertIn('"telegram_user_id": 987654321', captured["metadata_text"])
+        self.assertEqual(captured["file_bytes"], b"docx-bytes")
 
     def test_write_inspection_output_uses_env_write_token_header(self):
         with patch.dict(
@@ -185,11 +207,18 @@ class TelegramBridgeTests(unittest.TestCase):
             },
             clear=True,
         ):
-            with patch.object(
-                telegram_bridge,
-                "urlopen",
-                return_value=_FakeResponse({"success": True, "data": {"stored": True}, "error": None}),
-            ) as mocked_urlopen:
+            captured = {}
+
+            def _fake_run(command, capture_output, text, check):
+                captured["command"] = command
+                response_path = Path(command[command.index("--output") + 1])
+                response_path.write_text(
+                    json.dumps({"success": True, "data": {"stored": True}, "error": None}),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(command, 0, stdout="200", stderr="")
+
+            with patch.object(telegram_bridge.subprocess, "run", side_effect=_fake_run):
                 telegram_bridge.write_inspection_output(
                     file_name="report.docx",
                     content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -202,11 +231,8 @@ class TelegramBridgeTests(unittest.TestCase):
                     },
                 )
 
-        request = mocked_urlopen.call_args.args[0]
-        self.assertEqual(
-            request.get_header("X-telegram-inspection-output-write-token"),
-            "write-secret",
-        )
+        command = captured["command"]
+        self.assertIn("X-Telegram-Inspection-Output-Write-Token: write-secret", command)
 
     def test_write_inspection_output_does_not_send_without_write_token(self):
         config = telegram_bridge.InspectionOutputWriteConfig(
@@ -214,7 +240,7 @@ class TelegramBridgeTests(unittest.TestCase):
             token="   ",
         )
 
-        with patch.object(telegram_bridge, "urlopen") as mocked_urlopen:
+        with patch.object(telegram_bridge.subprocess, "run") as mocked_run:
             with self.assertRaises(telegram_bridge.TelegramBridgeError):
                 telegram_bridge.write_inspection_output(
                     file_name="report.docx",
@@ -229,7 +255,35 @@ class TelegramBridgeTests(unittest.TestCase):
                     config=config,
                 )
 
-        mocked_urlopen.assert_not_called()
+        mocked_run.assert_not_called()
+
+    def test_write_inspection_output_raises_on_non_200_response(self):
+        config = telegram_bridge.InspectionOutputWriteConfig(
+            base_url="https://example.test/root/",
+            token="write-secret",
+        )
+
+        def _fake_run(command, capture_output, text, check):
+            response_path = Path(command[command.index("--output") + 1])
+            response_path.write_text('{"success":false,"error":"forbidden"}', encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="403", stderr="")
+
+        with patch.object(telegram_bridge.subprocess, "run", side_effect=_fake_run):
+            with self.assertRaises(telegram_bridge.TelegramBridgeError) as ctx:
+                telegram_bridge.write_inspection_output(
+                    file_name="report.docx",
+                    content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    output_bytes=b"docx-bytes",
+                    metadata={
+                        "telegram_user_id": 987654321,
+                        "inspection_id": "inspection-1",
+                        "project_id": "project-9",
+                        "output_type": "report",
+                    },
+                    config=config,
+                )
+
+        self.assertIn("HTTP 403", str(ctx.exception))
 
 
 if __name__ == "__main__":
